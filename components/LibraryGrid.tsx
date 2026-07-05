@@ -114,7 +114,7 @@ export default function LibraryGrid({ books }: { books: BookWithCover[] }) {
                 </div>
               )}
             </div>
-            <div>
+            <div className="text-center">
               <p className="truncate text-sm font-medium text-zinc-100">
                 {book.title}
               </p>

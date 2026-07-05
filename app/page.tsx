@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { getLibrary } from "@/lib/library";
 import { getPresignedGetUrl } from "@/lib/r2";
@@ -19,7 +20,10 @@ export default async function Home() {
   return (
     <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
       <div className="mb-8 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Your library</h1>
+        <div className="flex items-center gap-3">
+          <Image src="/icons/logo-128.png" alt="" width={52} height={52} />
+          <h1 className="text-2xl font-semibold tracking-tight">Your library</h1>
+        </div>
         <div className="flex items-center gap-3">
           <Link
             href="/upload"

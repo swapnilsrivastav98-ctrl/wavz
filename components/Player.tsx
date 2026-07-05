@@ -346,21 +346,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
         )}
       </div>
 
-      <div className="mt-8 flex w-full items-center gap-3">
-        <span className="text-xs text-zinc-400">🔈</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={volume}
-          onChange={handleVolume}
-          className="player-range flex-1"
-          style={{ "--range-progress": `${volumePct}%` } as React.CSSProperties}
-        />
-      </div>
-
-      <div className="mt-6 flex flex-wrap justify-center gap-2">
+      <div className="mt-8 flex flex-wrap justify-center gap-2">
         {SPEEDS.map((s) => (
           <button
             key={s}
@@ -374,6 +360,20 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
             {s}x
           </button>
         ))}
+      </div>
+
+      <div className="mt-6 flex w-full items-center gap-3">
+        <span className="text-xs text-zinc-400">🔈</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          onChange={handleVolume}
+          className="player-range flex-1"
+          style={{ "--range-progress": `${volumePct}%` } as React.CSSProperties}
+        />
       </div>
 
       {chapters.length > 1 && (
