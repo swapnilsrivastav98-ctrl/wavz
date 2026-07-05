@@ -1,26 +1,131 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #18181b;
+  --foreground: #f4f4f5;
+
+  --surface: #1e1e23;
+  --surface-2: #232329;
+
+  --accent: #ff5a2e;
+  --accent-2: #ffb238;
+  --accent-soft: #ff5a2e26;
+
+  --shadow-dark: rgba(0, 0, 0, 0.55);
+  --shadow-light: rgba(255, 255, 255, 0.035);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ---- Neumorphic soft-UI primitives ---- */
+
+.neu-raised {
+  background: var(--surface);
+  box-shadow:
+    7px 7px 14px var(--shadow-dark),
+    -7px -7px 14px var(--shadow-light);
+}
+
+.neu-raised-sm {
+  background: var(--surface);
+  box-shadow:
+    4px 4px 8px var(--shadow-dark),
+    -4px -4px 8px var(--shadow-light);
+}
+
+.neu-inset {
+  background: var(--surface);
+  box-shadow:
+    inset 4px 4px 9px var(--shadow-dark),
+    inset -4px -4px 9px var(--shadow-light);
+}
+
+.neu-pressable {
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.neu-pressable:active {
+  box-shadow:
+    inset 3px 3px 7px var(--shadow-dark),
+    inset -3px -3px 7px var(--shadow-light);
+  transform: scale(0.98);
+}
+
+.accent-gradient {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.accent-glow {
+  box-shadow:
+    0 8px 24px -6px var(--accent-soft),
+    7px 7px 14px var(--shadow-dark),
+    -7px -7px 14px var(--shadow-light);
+}
+
+.cover-glow {
+  box-shadow:
+    0 0 60px -8px var(--accent-soft),
+    0 20px 40px -12px rgba(0, 0, 0, 0.6);
+}
+
+/* ---- Custom range slider (seek bar / volume) ---- */
+
+.player-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) calc(var(--range-progress, 0%)),
+    var(--surface-2) calc(var(--range-progress, 0%))
+  );
+  box-shadow: inset 2px 2px 5px var(--shadow-dark);
+  outline: none;
+}
+
+.player-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow:
+    0 0 0 4px rgba(0, 0, 0, 0.25),
+    0 0 12px 2px var(--accent-soft);
+  cursor: pointer;
+  margin-top: 0;
+}
+
+.player-range::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 12px 2px var(--accent-soft);
+  cursor: pointer;
+}
+
+.player-range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: transparent;
 }
