@@ -1,7 +1,8 @@
 export function uploadWithProgress(
   url: string,
   file: File,
-  onProgress: (fraction: number) => void
+  onProgress: (fraction: number) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -20,6 +21,8 @@ export function uploadWithProgress(
       }
     };
     xhr.onerror = () => reject(new Error("Upload failed"));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+    signal?.addEventListener("abort", () => xhr.abort());
     xhr.send(file);
   });
 }
