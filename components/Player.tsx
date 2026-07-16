@@ -11,6 +11,7 @@ const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
 const SKIP_BACK_SECONDS = 15;
 const SKIP_FORWARD_SECONDS = 30;
 const SAVE_INTERVAL_SECONDS = 5;
+const MAX_LOAD_RETRIES = 2;
 
 interface PlayerChapter {
   key: string;
@@ -33,6 +34,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   const lastSavedRef = useRef(0);
   const wasPlayingRef = useRef(false);
   const appliedResumeRef = useRef(false);
+  const retryCountRef = useRef(0);
 
   // Always start deterministic (chapter 0) so server/client render match —
   // the actual saved chapter/position is applied once metadata loads, below.
@@ -42,11 +44,37 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [rate, setRate] = useState(1);
+  const [chapterUrls, setChapterUrls] = useState(() => chapters.map((c) => c.url));
+  const [loadError, setLoadError] = useState(false);
 
   const [reordering, setReordering] = useState(false);
   const [draftChapters, setDraftChapters] = useState(chapters);
   const [savingOrder, setSavingOrder] = useState(false);
   const [reorderError, setReorderError] = useState<string | null>(null);
+
+  async function refreshChapterUrl(index: number): Promise<string> {
+    const key = chapters[index].key;
+    const res = await fetch(`/api/library/${bookId}/audio-url?key=${encodeURIComponent(key)}`);
+    if (!res.ok) throw new Error("Failed to refresh audio URL");
+    const data = await res.json();
+    return data.url as string;
+  }
+
+  async function retryLoad() {
+    retryCountRef.current = 0;
+    setLoadError(false);
+    wasPlayingRef.current = true;
+    try {
+      const freshUrl = await refreshChapterUrl(chapterIndex);
+      setChapterUrls((prev) => {
+        const next = [...prev];
+        next[chapterIndex] = freshUrl;
+        return next;
+      });
+    } catch {
+      setLoadError(true);
+    }
+  }
 
   function startReordering() {
     setDraftChapters(chapters);
@@ -93,6 +121,9 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
     const audio = audioRef.current;
     if (!audio) return;
     const saved = getProgress(bookId);
+    let cancelled = false;
+    retryCountRef.current = 0;
+    setLoadError(false);
 
     function onLoadedMetadata() {
       if (!audio) return;
@@ -157,18 +188,47 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       }
     }
 
+    async function onError() {
+      if (!audio || cancelled) return;
+      if (retryCountRef.current >= MAX_LOAD_RETRIES) {
+        setLoadError(true);
+        setIsPlaying(false);
+        wasPlayingRef.current = false;
+        return;
+      }
+      retryCountRef.current += 1;
+      try {
+        const freshUrl = await refreshChapterUrl(chapterIndex);
+        if (cancelled) return;
+        setChapterUrls((prev) => {
+          const next = [...prev];
+          next[chapterIndex] = freshUrl;
+          return next;
+        });
+      } catch {
+        if (!cancelled) {
+          setLoadError(true);
+          setIsPlaying(false);
+          wasPlayingRef.current = false;
+        }
+      }
+    }
+
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
 
     return () => {
+      cancelled = true;
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId, chapterIndex, chapters.length]);
@@ -277,7 +337,25 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
         </p>
       )}
 
-      <audio key={chapterIndex} ref={audioRef} src={chapter.url} preload="metadata" className="mt-6" />
+      <audio
+        key={chapterIndex}
+        ref={audioRef}
+        src={chapterUrls[chapterIndex]}
+        preload="metadata"
+        className="mt-6"
+      />
+
+      {loadError && (
+        <div className="mt-3 flex items-center gap-2 rounded-xl bg-red-500/10 px-3.5 py-2 text-xs text-red-400">
+          <span>Couldn&apos;t load this chapter.</span>
+          <button
+            onClick={retryLoad}
+            className="font-medium underline underline-offset-2 hover:text-red-300"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="mt-6 w-full">
         <input
