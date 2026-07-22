@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
-import { getAllProgress, type ProgressEntry } from "@/lib/progress";
+import { getAllProgress, clearProgress, type ProgressEntry } from "@/lib/progress";
 import { formatDuration } from "@/lib/format";
 import type { Book } from "@/lib/types";
 
@@ -58,6 +58,7 @@ export default function LibraryGrid({ books }: { books: BookWithCover[] }) {
     try {
       const res = await fetch(`/api/library/${book.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Delete failed");
+      clearProgress(book.id);
       router.refresh();
     } catch {
       window.alert("Failed to delete. Check the console/network tab for details.");

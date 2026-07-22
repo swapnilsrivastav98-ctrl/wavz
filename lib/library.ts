@@ -4,9 +4,36 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { r2, R2_BUCKET } from "./r2";
-import type { Book, Library } from "./types";
+import type { Book, Chapter, Library } from "./types";
 
 const MANIFEST_KEY = "library.json";
+
+export function parseChapters(input: unknown): Chapter[] | null {
+  if (!Array.isArray(input) || input.length === 0) return null;
+
+  const chapters: Chapter[] = [];
+  for (const item of input) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      typeof (item as { key?: unknown }).key !== "string" ||
+      !(item as { key: string }).key
+    ) {
+      return null;
+    }
+    const label =
+      typeof (item as { label?: unknown }).label === "string" &&
+      (item as { label: string }).label
+        ? (item as { label: string }).label
+        : `Chapter ${chapters.length + 1}`;
+    const duration =
+      typeof (item as { duration?: unknown }).duration === "number"
+        ? (item as { duration: number }).duration
+        : null;
+    chapters.push({ key: (item as { key: string }).key, label, duration });
+  }
+  return chapters;
+}
 
 async function streamToString(stream: unknown): Promise<string> {
   const body = stream as {
@@ -63,6 +90,30 @@ export async function deleteBook(id: string): Promise<void> {
   const library = await getLibrary();
   library.books = library.books.filter((b) => b.id !== id);
   await saveLibrary(library);
+}
+
+export async function addChapters(id: string, newChapters: Chapter[]): Promise<Book> {
+  const library = await getLibrary();
+  const book = library.books.find((b) => b.id === id);
+  if (!book) throw new Error("Book not found");
+
+  book.chapters = [...book.chapters, ...newChapters];
+  await saveLibrary(library);
+  return book;
+}
+
+export async function updateCover(
+  id: string,
+  coverKey: string | null
+): Promise<{ book: Book; oldCoverKey: string | null }> {
+  const library = await getLibrary();
+  const book = library.books.find((b) => b.id === id);
+  if (!book) throw new Error("Book not found");
+
+  const oldCoverKey = book.coverKey;
+  book.coverKey = coverKey;
+  await saveLibrary(library);
+  return { book, oldCoverKey };
 }
 
 export async function reorderChapters(id: string, orderedKeys: string[]): Promise<Book> {

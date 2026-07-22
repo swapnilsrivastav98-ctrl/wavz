@@ -6,6 +6,14 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { clearProgress, getProgress, setProgress } from "@/lib/progress";
 import { formatClock } from "@/lib/format";
+import {
+  collator,
+  isAudioFile,
+  presignUpload,
+  uploadChaptersConcurrently,
+  type FileStatus,
+} from "@/lib/uploadClient";
+import { uploadWithProgress } from "@/lib/uploadWithProgress";
 
 const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
 const SKIP_BACK_SECONDS = 15;
@@ -51,6 +59,19 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   const [draftChapters, setDraftChapters] = useState(chapters);
   const [savingOrder, setSavingOrder] = useState(false);
   const [reorderError, setReorderError] = useState<string | null>(null);
+
+  const [addingChapters, setAddingChapters] = useState(false);
+  const [newChapterFiles, setNewChapterFiles] = useState<File[]>([]);
+  const [newChapterStatuses, setNewChapterStatuses] = useState<FileStatus[]>([]);
+  const [newChapterProgress, setNewChapterProgress] = useState<number[]>([]);
+  const [savingChapters, setSavingChapters] = useState(false);
+  const [addChaptersError, setAddChaptersError] = useState<string | null>(null);
+  const newChapterIdsRef = useRef<string[]>([]);
+  const newChapterInputRef = useRef<HTMLInputElement>(null);
+
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   async function refreshChapterUrl(index: number): Promise<string> {
     const key = chapters[index].key;
@@ -114,6 +135,104 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       setReorderError("Couldn't save the new order. Try again.");
     } finally {
       setSavingOrder(false);
+    }
+  }
+
+  function startAddingChapters() {
+    setNewChapterFiles([]);
+    setAddChaptersError(null);
+    setAddingChapters(true);
+  }
+
+  function cancelAddingChapters() {
+    setAddingChapters(false);
+    setNewChapterFiles([]);
+    setAddChaptersError(null);
+  }
+
+  function handleNewChapterSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+      .filter(isAudioFile)
+      .sort((a, b) => collator.compare(a.name, b.name));
+    setNewChapterFiles(files);
+    newChapterIdsRef.current = files.map(() => crypto.randomUUID());
+  }
+
+  function removeNewChapterFile(index: number) {
+    setNewChapterFiles((prev) => prev.filter((_, i) => i !== index));
+    newChapterIdsRef.current = newChapterIdsRef.current.filter((_, i) => i !== index);
+  }
+
+  async function submitNewChapters() {
+    if (newChapterFiles.length === 0) return;
+    setSavingChapters(true);
+    setAddChaptersError(null);
+    setNewChapterStatuses(new Array(newChapterFiles.length).fill("pending"));
+    setNewChapterProgress(new Array(newChapterFiles.length).fill(0));
+
+    const controller = new AbortController();
+    try {
+      const newChapters = await uploadChaptersConcurrently(
+        newChapterFiles,
+        newChapterIdsRef.current,
+        controller.signal,
+        (i, s) =>
+          setNewChapterStatuses((prev) => {
+            const next = prev.slice();
+            next[i] = s;
+            return next;
+          }),
+        (i, fraction) =>
+          setNewChapterProgress((prev) => {
+            const next = prev.slice();
+            next[i] = fraction;
+            return next;
+          })
+      );
+
+      const res = await fetch(`/api/library/${bookId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newChapters }),
+      });
+      if (!res.ok) throw new Error("Failed to add chapters");
+
+      setAddingChapters(false);
+      setNewChapterFiles([]);
+      router.refresh();
+    } catch {
+      setAddChaptersError("Couldn't add chapters. Try again.");
+    } finally {
+      setSavingChapters(false);
+      setNewChapterStatuses([]);
+      setNewChapterProgress([]);
+    }
+  }
+
+  async function handleCoverSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setCoverUploading(true);
+    setCoverError(null);
+    try {
+      const coverId = crypto.randomUUID();
+      const presigned = await presignUpload(file, "cover", coverId);
+      await uploadWithProgress(presigned.url, file, () => {});
+
+      const res = await fetch(`/api/library/${bookId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ coverKey: presigned.key }),
+      });
+      if (!res.ok) throw new Error("Failed to update cover");
+
+      router.refresh();
+    } catch {
+      setCoverError("Couldn't update the cover. Try again.");
+    } finally {
+      setCoverUploading(false);
     }
   }
 
@@ -312,24 +431,42 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
         </a>
       </div>
 
-      <div className="cover-glow mb-6 aspect-square w-full max-w-xs overflow-hidden rounded-full bg-surface">
-        {coverUrl ? (
-          <Image
-            src={coverUrl}
-            alt={title}
-            width={400}
-            height={400}
-            unoptimized
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-6xl text-zinc-600">
-            📖
-          </div>
-        )}
+      <div className="group relative mb-2 aspect-square w-full max-w-xs">
+        <div className="cover-glow h-full w-full overflow-hidden rounded-full bg-surface">
+          {coverUrl ? (
+            <Image
+              src={coverUrl}
+              alt={title}
+              width={400}
+              height={400}
+              unoptimized
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-6xl text-zinc-600">
+              📖
+            </div>
+          )}
+        </div>
+        <input
+          ref={coverInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleCoverSelect}
+          className="hidden"
+        />
+        <button
+          onClick={() => coverInputRef.current?.click()}
+          disabled={coverUploading}
+          aria-label="Replace cover image"
+          className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-base text-zinc-200 opacity-0 backdrop-blur transition-opacity hover:bg-black/80 group-hover:opacity-100 disabled:opacity-100"
+        >
+          {coverUploading ? "…" : "✏️"}
+        </button>
       </div>
+      {coverError && <p className="mb-4 text-xs text-red-400">{coverError}</p>}
 
-      <h1 className="text-center text-xl font-semibold text-zinc-50">{title}</h1>
+      <h1 className="mt-4 text-center text-xl font-semibold text-zinc-50">{title}</h1>
       <p className="text-center text-sm text-zinc-400">{author}</p>
       {chapters.length > 1 && (
         <p className="mb-2 mt-1 text-center text-xs text-zinc-500">
@@ -454,8 +591,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
         />
       </div>
 
-      {chapters.length > 1 && (
-        <div id="chapters" className="mt-8 w-full scroll-mt-6">
+      <div id="chapters" className="mt-8 w-full scroll-mt-6">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs uppercase tracking-wide text-zinc-500">Chapters</p>
             {reordering ? (
@@ -476,17 +612,103 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
                   {savingOrder ? "Saving..." : "Save order"}
                 </button>
               </div>
+            ) : addingChapters ? (
+              <div className="flex items-center gap-3">
+                {addChaptersError && <span className="text-xs text-red-400">{addChaptersError}</span>}
+                <button
+                  onClick={cancelAddingChapters}
+                  disabled={savingChapters}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submitNewChapters}
+                  disabled={savingChapters || newChapterFiles.length === 0}
+                  className="accent-gradient neu-pressable rounded-full px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {savingChapters ? "Adding..." : "Add"}
+                </button>
+              </div>
             ) : (
-              <button
-                onClick={startReordering}
-                className="text-xs text-zinc-400 hover:text-zinc-200"
-              >
-                Reorder
-              </button>
+              <div className="flex items-center gap-3">
+                {chapters.length > 1 && (
+                  <button
+                    onClick={startReordering}
+                    className="text-xs text-zinc-400 hover:text-zinc-200"
+                  >
+                    Reorder
+                  </button>
+                )}
+                <button
+                  onClick={startAddingChapters}
+                  className="text-xs text-zinc-400 hover:text-zinc-200"
+                >
+                  Add chapters
+                </button>
+              </div>
             )}
           </div>
 
-          {reordering ? (
+          {addingChapters && (
+            <div className="neu-inset mb-3 rounded-2xl p-3">
+              <input
+                ref={newChapterInputRef}
+                type="file"
+                accept="audio/*"
+                multiple
+                onChange={handleNewChapterSelect}
+                className="hidden"
+              />
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => newChapterInputRef.current?.click()}
+                  className="rounded-full bg-surface-2 px-3 py-1.5 text-xs text-white hover:opacity-90"
+                >
+                  Choose files
+                </button>
+                <span className="text-xs text-zinc-500">
+                  {newChapterFiles.length > 0
+                    ? `${newChapterFiles.length} file${newChapterFiles.length > 1 ? "s" : ""} selected`
+                    : "no files selected"}
+                </span>
+              </div>
+              {newChapterFiles.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {newChapterFiles.map((file, i) => (
+                    <li
+                      key={`${file.name}-${i}`}
+                      className="flex items-center justify-between gap-2 text-xs text-zinc-300"
+                    >
+                      <span className="truncate">
+                        {i + 1}. {file.name}
+                      </span>
+                      {savingChapters ? (
+                        <span className="shrink-0 text-zinc-500">
+                          {newChapterStatuses[i] === "done"
+                            ? "Done"
+                            : newChapterStatuses[i] === "uploading"
+                            ? `${Math.round((newChapterProgress[i] ?? 0) * 100)}%`
+                            : "Waiting…"}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => removeNewChapterFile(i)}
+                          className="shrink-0 text-zinc-500 hover:text-red-400"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {chapters.length > 1 && (reordering ? (
             <ul className="neu-inset max-h-64 overflow-y-auto rounded-2xl p-1.5">
               {draftChapters.map((c, i) => (
                 <li key={c.key} className="flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-sm text-zinc-300">
@@ -541,9 +763,8 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
                 </li>
               ))}
             </ul>
-          )}
-        </div>
-      )}
+          ))}
+      </div>
     </div>
   );
 }
