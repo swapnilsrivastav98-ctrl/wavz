@@ -461,9 +461,11 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       if (!audio) return;
       audio.currentTime = seg.start;
       setCurrentTime(seg.start);
+      wasPlayingRef.current = true;
+      audio.play().catch(() => {});
       return;
     }
-    wasPlayingRef.current = audio ? !audio.paused : wasPlayingRef.current;
+    wasPlayingRef.current = true;
     appliedResumeRef.current = true;
     pendingSeekRef.current = seg.start;
     setChapterIndex(seg.chapterIndex);
@@ -545,7 +547,12 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   }
 
   const chapter = chapters[chapterIndex];
-  const seekPct = duration ? (currentTime / duration) * 100 : 0;
+  const activeSegment = segments[currentSegmentIndex];
+  const segStart = activeSegment?.start ?? 0;
+  const segEnd = activeSegment?.end ?? duration;
+  const segElapsed = Math.min(Math.max(0, currentTime - segStart), Math.max(0, segEnd - segStart));
+  const segTotal = Math.max(0, segEnd - segStart);
+  const seekPct = segTotal ? (segElapsed / segTotal) * 100 : 0;
   const volumePct = volume * 100;
 
   return (
@@ -637,16 +644,16 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       <div className="mt-6 w-full">
         <input
           type="range"
-          min={0}
-          max={duration || 0}
+          min={segStart}
+          max={segEnd || segStart}
           value={currentTime}
           onChange={handleSeek}
           className="player-range"
           style={{ "--range-progress": `${seekPct}%` } as React.CSSProperties}
         />
         <div className="mt-2 flex justify-between text-xs tabular-nums text-zinc-400">
-          <span>{formatClock(currentTime)}</span>
-          <span>{formatClock(duration)}</span>
+          <span>{formatClock(segElapsed)}</span>
+          <span>{formatClock(segTotal)}</span>
         </div>
       </div>
 
