@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clearProgress, getProgress, setProgress } from "@/lib/progress";
 import { formatClock } from "@/lib/format";
 import {
@@ -20,12 +20,25 @@ const SKIP_BACK_SECONDS = 15;
 const SKIP_FORWARD_SECONDS = 30;
 const SAVE_INTERVAL_SECONDS = 5;
 const MAX_LOAD_RETRIES = 2;
+const AUTO_SPLIT_INTERVAL_SECONDS = 3600;
 
 interface PlayerChapter {
   key: string;
   label: string;
   duration: number | null;
   url: string;
+  markers?: number[];
+}
+
+interface Segment {
+  chapterIndex: number;
+  key: string;
+  label: string;
+  numberLabel: string;
+  start: number;
+  end: number | null;
+  partIndex: number;
+  partCount: number;
 }
 
 interface PlayerProps {
@@ -43,6 +56,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   const wasPlayingRef = useRef(false);
   const appliedResumeRef = useRef(false);
   const retryCountRef = useRef(0);
+  const pendingSeekRef = useRef<number | null>(null);
 
   // Always start deterministic (chapter 0) so server/client render match —
   // the actual saved chapter/position is applied once metadata loads, below.
@@ -72,6 +86,53 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
   const [coverUploading, setCoverUploading] = useState(false);
   const [coverError, setCoverError] = useState<string | null>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+
+  const [splittingChapter, setSplittingChapter] = useState(false);
+  const [splitError, setSplitError] = useState<string | null>(null);
+
+  const segments = useMemo<Segment[]>(() => {
+    const out: Segment[] = [];
+    chapters.forEach((c, ci) => {
+      const markers = c.markers ?? [];
+      const bounds = [0, ...markers, c.duration ?? Infinity];
+      const partCount = bounds.length - 1;
+      for (let p = 0; p < partCount; p++) {
+        out.push({
+          chapterIndex: ci,
+          key: c.key,
+          label: partCount > 1 ? `${c.label} — Part ${p + 1}` : c.label,
+          numberLabel: partCount > 1 ? `${ci + 1}.${p + 1}` : `${ci + 1}`,
+          start: bounds[p],
+          end: Number.isFinite(bounds[p + 1]) ? bounds[p + 1] : null,
+          partIndex: p,
+          partCount,
+        });
+      }
+    });
+    return out;
+  }, [chapters]);
+
+  const autoSplitCandidates = useMemo(
+    () =>
+      chapters.filter(
+        (c) =>
+          c.duration != null &&
+          c.duration > AUTO_SPLIT_INTERVAL_SECONDS &&
+          (!c.markers || c.markers.length === 0)
+      ),
+    [chapters]
+  );
+
+  const currentSegmentIndex = useMemo(() => {
+    let fallback = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      if (s.chapterIndex !== chapterIndex) continue;
+      fallback = i;
+      if (currentTime >= s.start && (s.end == null || currentTime < s.end)) return i;
+    }
+    return fallback;
+  }, [segments, chapterIndex, currentTime]);
 
   async function refreshChapterUrl(index: number): Promise<string> {
     const key = chapters[index].key;
@@ -248,6 +309,20 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       if (!audio) return;
       setDuration(audio.duration);
 
+      if (pendingSeekRef.current != null) {
+        const seekTo = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+        appliedResumeRef.current = true;
+        audio.currentTime = seekTo;
+        setCurrentTime(seekTo);
+        audio.volume = volume;
+        audio.playbackRate = rate;
+        if (wasPlayingRef.current) {
+          audio.play().catch(() => {});
+        }
+        return;
+      }
+
       if (!appliedResumeRef.current) {
         const validSavedChapter =
           saved && saved.chapterIndex >= 0 && saved.chapterIndex < chapters.length;
@@ -378,12 +453,76 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
     setCurrentTime(audio.currentTime);
   }
 
-  function goToChapter(index: number) {
-    if (index < 0 || index >= chapters.length || index === chapterIndex) return;
+  function goToSegment(index: number) {
+    const seg = segments[index];
+    if (!seg) return;
     const audio = audioRef.current;
+    if (seg.chapterIndex === chapterIndex) {
+      if (!audio) return;
+      audio.currentTime = seg.start;
+      setCurrentTime(seg.start);
+      return;
+    }
     wasPlayingRef.current = audio ? !audio.paused : wasPlayingRef.current;
     appliedResumeRef.current = true;
-    setChapterIndex(index);
+    pendingSeekRef.current = seg.start;
+    setChapterIndex(seg.chapterIndex);
+  }
+
+  async function patchMarkers(key: string, markers: number[]) {
+    setSplittingChapter(true);
+    setSplitError(null);
+    try {
+      const res = await fetch(`/api/library/${bookId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chapterMarkers: { key, markers } }),
+      });
+      if (!res.ok) throw new Error("Failed to update chapter splits");
+      router.refresh();
+    } catch {
+      setSplitError("Couldn't update splits. Try again.");
+    } finally {
+      setSplittingChapter(false);
+    }
+  }
+
+  function removeMarker(chapterIdx: number, markerValue: number) {
+    const target = chapters[chapterIdx];
+    const next = (target.markers ?? []).filter((m) => m !== markerValue);
+    patchMarkers(target.key, next);
+  }
+
+  async function autoSplitBook() {
+    if (autoSplitCandidates.length === 0) return;
+    const ok = window.confirm(
+      `Split ${autoSplitCandidates.length} chapter${
+        autoSplitCandidates.length > 1 ? "s" : ""
+      } over 1 hour into 1-hour parts? Chapters that already have manual splits are left alone.`
+    );
+    if (!ok) return;
+
+    setSplittingChapter(true);
+    setSplitError(null);
+    try {
+      for (const c of autoSplitCandidates) {
+        const markers: number[] = [];
+        for (let t = AUTO_SPLIT_INTERVAL_SECONDS; t < c.duration!; t += AUTO_SPLIT_INTERVAL_SECONDS) {
+          markers.push(t);
+        }
+        const res = await fetch(`/api/library/${bookId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chapterMarkers: { key: c.key, markers } }),
+        });
+        if (!res.ok) throw new Error("Failed to auto-split");
+      }
+      router.refresh();
+    } catch {
+      setSplitError("Couldn't auto-split all chapters. Try again.");
+    } finally {
+      setSplittingChapter(false);
+    }
   }
 
   function handleSeek(e: React.ChangeEvent<HTMLInputElement>) {
@@ -459,7 +598,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
           onClick={() => coverInputRef.current?.click()}
           disabled={coverUploading}
           aria-label="Replace cover image"
-          className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-base text-zinc-200 opacity-0 backdrop-blur transition-opacity hover:bg-black/80 group-hover:opacity-100 disabled:opacity-100"
+          className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-base text-zinc-200 opacity-100 backdrop-blur transition-opacity hover:bg-black/80 disabled:opacity-100 md:opacity-0 md:group-hover:opacity-100"
         >
           {coverUploading ? "…" : "✏️"}
         </button>
@@ -468,9 +607,10 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
 
       <h1 className="mt-4 text-center text-xl font-semibold text-zinc-50">{title}</h1>
       <p className="text-center text-sm text-zinc-400">{author}</p>
-      {chapters.length > 1 && (
+      {segments.length > 1 && (
         <p className="mb-2 mt-1 text-center text-xs text-zinc-500">
-          Chapter {chapterIndex + 1} of {chapters.length} · {chapter.label}
+          Chapter {chapterIndex + 1} of {chapters.length} ·{" "}
+          {segments[currentSegmentIndex]?.label ?? chapter.label}
         </p>
       )}
 
@@ -511,10 +651,10 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
       </div>
 
       <div className="mt-6 flex items-center justify-center gap-5">
-        {chapters.length > 1 && (
+        {segments.length > 1 && (
           <button
-            onClick={() => goToChapter(chapterIndex - 1)}
-            disabled={chapterIndex === 0}
+            onClick={() => goToSegment(currentSegmentIndex - 1)}
+            disabled={currentSegmentIndex === 0}
             aria-label="Previous chapter"
             className="neu-raised neu-pressable flex h-11 w-11 items-center justify-center rounded-full text-lg text-zinc-300 hover:text-white disabled:opacity-30"
           >
@@ -549,10 +689,10 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
           <span className="mt-0.5 text-[10px] leading-none">{SKIP_FORWARD_SECONDS}s</span>
         </button>
 
-        {chapters.length > 1 && (
+        {segments.length > 1 && (
           <button
-            onClick={() => goToChapter(chapterIndex + 1)}
-            disabled={chapterIndex === chapters.length - 1}
+            onClick={() => goToSegment(currentSegmentIndex + 1)}
+            disabled={currentSegmentIndex === segments.length - 1}
             aria-label="Next chapter"
             className="neu-raised neu-pressable flex h-11 w-11 items-center justify-center rounded-full text-lg text-zinc-300 hover:text-white disabled:opacity-30"
           >
@@ -632,6 +772,16 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
               </div>
             ) : (
               <div className="flex items-center gap-3">
+                {splitError && <span className="text-xs text-red-400">{splitError}</span>}
+                {autoSplitCandidates.length > 0 && (
+                  <button
+                    onClick={autoSplitBook}
+                    disabled={splittingChapter}
+                    className="text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+                  >
+                    {splittingChapter ? "Splitting..." : "Auto-split into chapters"}
+                  </button>
+                )}
                 {chapters.length > 1 && (
                   <button
                     onClick={startReordering}
@@ -708,7 +858,7 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
             </div>
           )}
 
-          {chapters.length > 1 && (reordering ? (
+          {segments.length > 1 && (reordering ? (
             <ul className="neu-inset max-h-64 overflow-y-auto rounded-2xl p-1.5">
               {draftChapters.map((c, i) => (
                 <li key={c.key} className="flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-sm text-zinc-300">
@@ -736,32 +886,51 @@ export default function Player({ bookId, title, author, chapters, coverUrl }: Pl
             </ul>
           ) : (
             <ul className="neu-inset max-h-64 overflow-y-auto rounded-2xl p-1.5">
-              {chapters.map((c, i) => (
-                <li key={c.key}>
-                  <button
-                    onClick={() => goToChapter(i)}
-                    className={`flex w-full items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-left text-sm ${
-                      i === chapterIndex
-                        ? "neu-raised-sm text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    <span className="truncate">
-                      {i + 1}. {c.label}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-2">
-                      {c.duration != null && (
-                        <span className="text-xs text-zinc-500">{formatClock(c.duration)}</span>
-                      )}
-                      {i === chapterIndex && (
-                        <span className="accent-gradient flex h-6 w-6 items-center justify-center rounded-full text-[10px] text-white">
-                          {isPlaying ? "⏸" : "▶"}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {segments.map((seg, i) => {
+                const chapterDuration = chapters[seg.chapterIndex].duration;
+                const segDuration =
+                  seg.end != null
+                    ? seg.end - seg.start
+                    : chapterDuration != null
+                    ? chapterDuration - seg.start
+                    : null;
+                return (
+                  <li key={`${seg.key}-${seg.partIndex}`} className="flex items-center gap-1">
+                    <button
+                      onClick={() => goToSegment(i)}
+                      className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-left text-sm ${
+                        i === currentSegmentIndex
+                          ? "neu-raised-sm text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      <span className="truncate">
+                        {seg.numberLabel}. {seg.label}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        {segDuration != null && (
+                          <span className="text-xs text-zinc-500">{formatClock(segDuration)}</span>
+                        )}
+                        {i === currentSegmentIndex && (
+                          <span className="accent-gradient flex h-6 w-6 items-center justify-center rounded-full text-[10px] text-white">
+                            {isPlaying ? "⏸" : "▶"}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                    {seg.partIndex > 0 && (
+                      <button
+                        onClick={() => removeMarker(seg.chapterIndex, seg.start)}
+                        disabled={splittingChapter}
+                        aria-label={`Remove split before ${seg.label}`}
+                        className="neu-raised-sm neu-pressable flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs text-zinc-400 hover:text-red-400 disabled:opacity-40"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ))}
       </div>

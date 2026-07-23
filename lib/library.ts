@@ -116,6 +116,27 @@ export async function updateCover(
   return { book, oldCoverKey };
 }
 
+export async function setChapterMarkers(
+  id: string,
+  key: string,
+  markers: number[]
+): Promise<Book> {
+  const library = await getLibrary();
+  const book = library.books.find((b) => b.id === id);
+  if (!book) throw new Error("Book not found");
+
+  const chapter = book.chapters.find((c) => c.key === key);
+  if (!chapter) throw new Error("Chapter not found");
+
+  const cleaned = Array.from(new Set(markers.map((m) => Math.round(m * 100) / 100)))
+    .filter((m) => m > 0 && (chapter.duration == null || m < chapter.duration))
+    .sort((a, b) => a - b);
+
+  chapter.markers = cleaned.length > 0 ? cleaned : undefined;
+  await saveLibrary(library);
+  return book;
+}
+
 export async function reorderChapters(id: string, orderedKeys: string[]): Promise<Book> {
   const library = await getLibrary();
   const book = library.books.find((b) => b.id === id);

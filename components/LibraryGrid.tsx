@@ -101,7 +101,7 @@ export default function LibraryGrid({ books }: { books: BookWithCover[] }) {
                 onClick={(e) => handleDelete(e, book)}
                 disabled={deletingId === book.id}
                 aria-label={`Delete ${book.title}`}
-                className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-sm text-zinc-200 opacity-0 backdrop-blur transition-opacity hover:bg-red-600 group-hover:opacity-100 disabled:opacity-100"
+                className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-sm text-zinc-200 opacity-100 backdrop-blur transition-opacity hover:bg-red-600 disabled:opacity-100 md:opacity-0 md:group-hover:opacity-100"
               >
                 {deletingId === book.id ? "…" : "✕"}
               </button>

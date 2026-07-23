@@ -5,13 +5,14 @@ import {
   getLibrary,
   parseChapters,
   reorderChapters,
+  setChapterMarkers,
   updateCover,
 } from "@/lib/library";
 import { deleteObjects } from "@/lib/r2";
 
 function errorResponse(err: unknown, fallback: string) {
   const message = err instanceof Error ? err.message : fallback;
-  const status = message === "Book not found" ? 404 : 400;
+  const status = message === "Book not found" || message === "Chapter not found" ? 404 : 400;
   return NextResponse.json({ error: message }, { status });
 }
 
@@ -48,6 +49,28 @@ export async function PATCH(
       return NextResponse.json({ book });
     } catch (err) {
       return errorResponse(err, "Failed to add chapters");
+    }
+  }
+
+  if ("chapterMarkers" in body) {
+    const { chapterMarkers } = body;
+    const key = chapterMarkers?.key;
+    const markers = chapterMarkers?.markers;
+    if (
+      typeof key !== "string" ||
+      !Array.isArray(markers) ||
+      markers.some((m) => typeof m !== "number" || !Number.isFinite(m))
+    ) {
+      return NextResponse.json(
+        { error: "chapterMarkers must be { key: string, markers: number[] }" },
+        { status: 400 }
+      );
+    }
+    try {
+      const book = await setChapterMarkers(id, key, markers);
+      return NextResponse.json({ book });
+    } catch (err) {
+      return errorResponse(err, "Failed to update chapter splits");
     }
   }
 

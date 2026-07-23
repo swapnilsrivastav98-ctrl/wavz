@@ -26,6 +26,7 @@ export default async function BookPage({
     label: c.label,
     duration: c.duration,
     url: chapterUrls[i],
+    markers: c.markers,
   }));
 
   return (
